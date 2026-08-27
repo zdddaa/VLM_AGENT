@@ -12,6 +12,7 @@ authors = [{name = "VLM_AGENT contributors"}]
 dependencies = []
 
 [project.optional-dependencies]
+grounding = ["torch>=2.2"]
 dev = ["pytest>=8.0"]
 
 [tool.setuptools.packages.find]
