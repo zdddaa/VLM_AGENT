@@ -1,9 +1,9 @@
 """Change-conditioned SAM3 integration.
 
-The adapter is the only geometry module that is allowed to combine T1/T2 tokens,
-change probability, and the change-object box. A concrete SAM3 implementation is
-plugged in through ``SAM3Backend``; until then the trainable auxiliary geometry/
-semantic decoder provides a testable fallback path.
+The adapter is the only geometry module that combines T1/T2 tokens, change
+probability, and the change-object box. A concrete SAM3 implementation is plugged
+in through ``SAM3Backend``; until then the trainable auxiliary geometry/semantic
+decoder provides a testable fallback path.
 """
 
 from __future__ import annotations
@@ -17,10 +17,7 @@ from torch.nn import functional as F
 
 from ..schemas.change_object import BBox, ChangeObject
 from .box_prompt_encoder import BoxPromptEncoder, BoxPromptEncoding
-from .geometry_semantic_decoder import (
-    GeometrySemanticDecoder,
-    GeometrySemanticDecoderOutput,
-)
+from .geometry_semantic_decoder import GeometrySemanticDecoder
 from .probability_injector import ProbabilityInjection, ProbabilityInjectionOutput
 from .temporal_token_fuser import TemporalTokenFusion, TemporalTokenFusionOutput
 
@@ -49,6 +46,7 @@ class SAM3Backend(Protocol):
         probability_tokens: Tensor,
         box_prompt_tokens: Tensor,
         box_spatial_prior: Tensor | None,
+        normalized_boxes: Tensor,
         spatial_shape: tuple[int, int],
         image_size: tuple[int, int],
     ) -> SAM3BackendOutput: ...
@@ -78,6 +76,8 @@ class SAM3ChangeAdapterResult:
         batch_index: int = 0,
         refined_mask_ref: str | None = None,
         semantic_feature_ref: str | None = None,
+        t1_semantic_refinement_ref: str | None = None,
+        t2_semantic_refinement_ref: str | None = None,
         polygon_geojson: dict[str, Any] | None = None,
     ) -> None:
         """Write lightweight geometry/evidence back to the canonical object state.
@@ -95,8 +95,13 @@ class SAM3ChangeAdapterResult:
         if polygon_geojson is not None:
             obj.geometry.polygon_geojson = polygon_geojson
         obj.geometry.boundary_source = "sam3_change_adapter"
+
         if semantic_feature_ref is not None:
             obj.semantic_feature_ref = semantic_feature_ref
+        if t1_semantic_refinement_ref is not None:
+            obj.t1_semantic_refinement_ref = t1_semantic_refinement_ref
+        if t2_semantic_refinement_ref is not None:
+            obj.t2_semantic_refinement_ref = t2_semantic_refinement_ref
 
         evidence_values: dict[str, Any] = {
             "boundary_confidence": _scalar(self.boundary_confidence, batch_index),
@@ -116,6 +121,8 @@ class SAM3ChangeAdapterResult:
             {
                 "spatial_shape": list(self.spatial_shape),
                 "backend_metadata": dict(self.backend_metadata),
+                "has_t1_semantic_logits": self.t1_semantic_logits is not None,
+                "has_t2_semantic_logits": self.t2_semantic_logits is not None,
             }
         )
         obj.record_trace(
@@ -132,22 +139,6 @@ def _scalar(value: Tensor, batch_index: int) -> float:
     if value.ndim == 0:
         return float(value.detach().cpu().item())
     return float(value[batch_index].detach().cpu().item())
-
-
-def _resize_prior(prior: Tensor, target_hw: tuple[int, int]) -> Tensor:
-    batch, token_count, channels = prior.shape
-    if channels != 1:
-        raise ValueError("box spatial prior must have one channel")
-    source_side = int(token_count**0.5)
-    if source_side * source_side == token_count:
-        source_hw = (source_side, source_side)
-    else:
-        raise ValueError(
-            "cannot resize flattened box prior without a known rectangular source shape"
-        )
-    grid = prior.transpose(1, 2).reshape(batch, 1, *source_hw)
-    resized = F.interpolate(grid, size=target_hw, mode="nearest")
-    return resized
 
 
 class SAM3ChangeAdapter(nn.Module):
@@ -207,7 +198,10 @@ class SAM3ChangeAdapter(nn.Module):
                 "spatial_shape is required for sequence tokens because geometry decoding "
                 "must reconstruct a 2D token grid"
             )
-        if resolved_spatial_shape[0] * resolved_spatial_shape[1] != temporal.fused_tokens.shape[1]:
+        if (
+            resolved_spatial_shape[0] * resolved_spatial_shape[1]
+            != temporal.fused_tokens.shape[1]
+        ):
             raise ValueError("resolved spatial_shape does not match fused token count")
 
         probability = self.probability_injector(
@@ -249,6 +243,7 @@ class SAM3ChangeAdapter(nn.Module):
             semantic_refinement_confidence = auxiliary.semantic_refinement_confidence
             backend_metadata: dict[str, Any] = {"backend": "auxiliary_decoder"}
         else:
+            self._validate_backend_output(backend_output, conditioned.shape[0])
             mask_logits = backend_output.mask_logits
             boundary_confidence = (
                 backend_output.boundary_confidence
@@ -331,9 +326,28 @@ class SAM3ChangeAdapter(nn.Module):
             probability_tokens=probability.probability_tokens,
             box_prompt_tokens=box.prompt_tokens,
             box_spatial_prior=box.spatial_prior,
+            normalized_boxes=box.normalized_boxes,
             spatial_shape=spatial_shape,
             image_size=image_size,
         )
+
+    @staticmethod
+    def _validate_backend_output(output: SAM3BackendOutput, batch_size: int) -> None:
+        if output.mask_logits.ndim != 4 or output.mask_logits.shape[1] != 1:
+            raise ValueError(
+                "SAM3 backend mask_logits must have shape [B,1,H,W], "
+                f"got {tuple(output.mask_logits.shape)}"
+            )
+        if output.mask_logits.shape[0] != batch_size:
+            raise ValueError("SAM3 backend mask batch size does not match adapter batch")
+
+        for name in (
+            "boundary_confidence",
+            "semantic_refinement_confidence",
+        ):
+            value = getattr(output, name)
+            if value is not None and value.numel() not in (1, batch_size):
+                raise ValueError(f"{name} must be scalar or contain one value per batch item")
 
     @staticmethod
     def _semantic_difference(
