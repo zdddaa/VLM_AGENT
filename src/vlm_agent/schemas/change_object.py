@@ -39,7 +39,7 @@ class BBox:
 class GeometryState:
     """Geometry references for one candidate change object.
 
-    Masks and tensors stay outside the JSON state.  The object stores paths/URIs so
+    Masks and tensors stay outside the JSON state. The object stores paths/URIs so
     GeoTIFF, NumPy, Torch, or shared-memory backends can be connected later.
     """
 
@@ -97,6 +97,11 @@ class ChangeObject:
 
     development_type: str | None = None
     semantic_feature_ref: str | None = None
+
+    # Optional heavy outputs persisted by the SAM3 Change Adapter. The canonical
+    # object keeps references only; tensors remain in the model/artifact backend.
+    t1_semantic_refinement_ref: str | None = None
+    t2_semantic_refinement_ref: str | None = None
 
     metadata: dict[str, Any] = field(default_factory=dict)
     trace: list[dict[str, Any]] = field(default_factory=list)
