@@ -11,6 +11,20 @@ from statistics import mean
 from typing import Any
 
 
+_PROBABILITY_FIELDS = {
+    "cd_confidence",
+    "boundary_confidence",
+    "seed_coverage",
+    "probability_support",
+    "box_support",
+    "semantic_refinement_confidence",
+    "t1_semantic_confidence",
+    "t2_semantic_confidence",
+    "semantic_difference",
+    "pseudo_change_risk",
+}
+
+
 def _validate_probability(name: str, value: float | None) -> None:
     if value is None:
         return
@@ -24,33 +38,34 @@ class EvidenceState:
 
     Values may be ``None`` while a pipeline stage has not produced the evidence yet.
     This allows one ``ChangeObject`` to persist across the full agent state machine.
+
+    ``probability_support`` and ``box_support`` are produced by the SAM3 Change
+    Adapter. The first measures change-probability support inside the change box;
+    the second measures how much predicted mask mass remains supported by that box.
+    ``semantic_refinement_confidence`` is an auxiliary confidence and must not be
+    interpreted as a calibrated class probability until validated.
     """
 
     cd_confidence: float | None = None
     boundary_confidence: float | None = None
     seed_coverage: float | None = None
+    probability_support: float | None = None
+    box_support: float | None = None
 
     t1_semantic_confidence: float | None = None
     t2_semantic_confidence: float | None = None
+    semantic_refinement_confidence: float | None = None
     semantic_difference: float | None = None
 
     pseudo_change_risk: float | None = None
     semantic_conflict: bool = False
     geometry_anomaly: bool = False
 
-    # Filled only after an explicit verification step.  None means unverified.
+    # Filled only after an explicit verification step. None means unverified.
     real_change_verified: bool | None = None
 
     def __post_init__(self) -> None:
-        for name in (
-            "cd_confidence",
-            "boundary_confidence",
-            "seed_coverage",
-            "t1_semantic_confidence",
-            "t2_semantic_confidence",
-            "semantic_difference",
-            "pseudo_change_risk",
-        ):
+        for name in _PROBABILITY_FIELDS:
             _validate_probability(name, getattr(self, name))
 
     @property
@@ -98,15 +113,7 @@ class EvidenceState:
         for name, value in values.items():
             if not hasattr(self, name):
                 raise AttributeError(f"Unknown evidence field: {name}")
-            if name in {
-                "cd_confidence",
-                "boundary_confidence",
-                "seed_coverage",
-                "t1_semantic_confidence",
-                "t2_semantic_confidence",
-                "semantic_difference",
-                "pseudo_change_risk",
-            }:
+            if name in _PROBABILITY_FIELDS:
                 _validate_probability(name, value)
             setattr(self, name, value)
 
