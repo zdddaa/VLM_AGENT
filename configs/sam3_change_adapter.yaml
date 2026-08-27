@@ -1,0 +1,37 @@
+# Engineering defaults only. Validate/calibrate before reporting experiments.
+model:
+  feature_dim: 256
+  adapter_hidden_dim: 128
+  num_semantic_classes: 0
+  prompt_token_count: 2
+  probability_gate_strength: 1.0
+
+inputs:
+  token_layout: "BNC_or_BCHW"
+  probability_range: [0.0, 1.0]
+  box_format: "xyxy_pixel"
+  image_size_order: "height_width"
+
+outputs:
+  refined_mask: true
+  boundary_confidence: true
+  t1_semantic_logits: false
+  t2_semantic_logits: false
+  semantic_difference: true
+  probability_support: true
+  box_support: true
+
+backend:
+  # The repository currently exposes a SAM3Backend protocol. Replace this with
+  # the concrete local SAM3 implementation when its API/model path is connected.
+  name: null
+  checkpoint: null
+  device: "cuda"
+
+training:
+  # Loss weights are placeholders pending dataset-specific validation.
+  mask_weight: 1.0
+  boundary_weight: 1.0
+  semantic_weight: 0.5
+  probability_consistency_weight: 0.25
+  temporal_consistency_weight: 0.25
